@@ -237,4 +237,4 @@ module_exit(hello_exit);
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Fred");
-MODULE_DESCRIPTION("My 2nd driver demo");
+MODULE_DESCRIPTION("My driver demo for chapter7");
