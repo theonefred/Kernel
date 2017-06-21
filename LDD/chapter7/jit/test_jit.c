@@ -24,7 +24,7 @@ int main()
     ret=read(f, buf, 128); /* device read */ 
     //printf( "read %d bytes\n ", ret); //On  success,  the number of bytes read is returned (zero indicates end of file)
     
-    printf("buf=%s\n",buf);
+    printf("buf=[ %s ]\n",buf);
 
     close(f); 
 }

@@ -3,7 +3,7 @@
 #include <linux/version.h>
 #include <linux/moduleparam.h>
 
-#include <linux/sched.h>    //current, jiffies.h, ...
+#include <linux/sched.h>    //current, jiffies.h, schedule(), ...
 #include <linux/types.h>    //dev_t,...
 #include <linux/fs.h>   //register_chrdev_region() / alloc_chrdev_region(),...
 #include <linux/cdev.h> //struct cdev,...
@@ -16,11 +16,28 @@
 #include <linux/time.h> //timespec, do_gettimeofday(),...
 #include <asm/msr.h> //rdtsc(),...
 #include <linux/timex.h> //get_cycles()
+//#include <asm/processor.h> //cpu_relax(), included by <linux/sched.h>
+//#include <linux/wait.h> //schedule(), included by <linux/sched.h>
+#include <linux/delay.h> //#include <asm/delay.h>
 
+enum jit_ways {
+    JIT_CURTIME=0,
+    JIT_BUSY,
+    JIT_SCHED,
+    JIT_QUEUE,
+    JIT_SCHEDTO,
+    JIT_LATENCY_NS=5,
+    JIT_LATENCY_US,
+    JIT_LATENCY_MS,
+    JIT_LATENCY_SLEEP
+};
 
 static int delay=HZ;
-module_param(delay, int, S_IRUGO);
-MODULE_PARM_DESC(delay, "delay in second(s)");
+//module_param(delay, int, S_IRUGO);
+//MODULE_PARM_DESC(delay, "delay in second(s)");
+static int jit_way=JIT_CURTIME;
+module_param(jit_way, int, S_IRUGO);
+MODULE_PARM_DESC(jit_way, "JIT_CURTIME=0, JIT_BUSY=1, JIT_SCHED=2, JIT_QUEUE=3, JIT_SCHEDTO=4");
 
 dev_t mydev;
 int jit_major=0;
@@ -90,6 +107,85 @@ int jit_currentime(char *buf)
     return len;
 }
 
+int jit_fn(char *buf, int way)
+{
+    int len=0;
+    unsigned long j0, j1; /* jiffies */
+    wait_queue_head_t wait;
+    unsigned long ini=0, end=0;
+    u64 tsc1=0, tsc2=0;
+
+    init_waitqueue_head (&wait);
+    j0 = jiffies;
+    j1 = j0 + delay;
+
+    switch(way) {
+        case JIT_BUSY:
+            while (time_before(jiffies, j1))
+                cpu_relax();
+            break;
+            
+        case JIT_SCHED:
+            while (time_before(jiffies, j1)) {
+                schedule();
+            }
+            break;
+            
+        case JIT_QUEUE:
+            wait_event_interruptible_timeout(wait, 0, delay);
+            break;
+            
+        case JIT_SCHEDTO:
+            set_current_state(TASK_INTERRUPTIBLE);
+            schedule_timeout (delay);
+            break;
+            
+        case JIT_LATENCY_NS:
+            rdtscl(ini);
+            rdtscll(tsc1);
+            ndelay(10); 
+            rdtscl(end); //end-ini=4xxx clock/3392MHz =1.x us
+            tsc2=(u64)get_cycles();
+            break;
+            
+        case JIT_LATENCY_US:
+            rdtscl(ini);
+            rdtscll(tsc1);
+            udelay(10);
+            rdtscl(end);
+            tsc2=(u64)get_cycles();
+            break;
+            
+        case JIT_LATENCY_MS:
+            rdtscl(ini);
+            rdtscll(tsc1);
+            mdelay(10);
+            rdtscl(end);
+            tsc2=(u64)get_cycles();
+            break;
+            
+        case JIT_LATENCY_SLEEP:
+            rdtscl(ini);
+            rdtscll(tsc1);
+            msleep(10);
+            rdtscl(end);
+            tsc2=(u64)get_cycles();
+            break;
+    }
+    j1 = jiffies; /* actual value after we delayed */
+
+    if (way >= JIT_LATENCY_NS) {
+        printk(KERN_DEBUG "ini=%lu, end=%lu, end-ini=%lu \n", ini, end, end-ini);
+        printk(KERN_DEBUG "tsc1=%llu, tsc2=%llu \n", tsc1, tsc2);
+        len = sprintf(buf, "ini=%lu, end=%lu, end-ini=%lu, tsc1=%llu, tsc2=%llu, delta=%llu \n", ini, end, end-ini, tsc1, tsc2, tsc2-tsc1);
+    }
+    else {
+        printk(KERN_DEBUG "j0=%lu, j1=%lu\n", j0, j1);
+        len = sprintf(buf, "%9lu %9lu\n", j0, j1);
+    }
+    return len;
+}
+
 ssize_t my_read(struct file *filp, char __user *buf, size_t count, loff_t *f_pos)
 {
     ssize_t retval = -ENOMEM;
@@ -101,7 +197,11 @@ ssize_t my_read(struct file *filp, char __user *buf, size_t count, loff_t *f_pos
     if (down_interruptible(&my_devices.sem))
         return -ERESTARTSYS;
 
-    len=jit_currentime(my_devices.buf);
+    if (jit_way==JIT_CURTIME)
+        len=jit_currentime(my_devices.buf);
+    else
+        len=jit_fn(my_devices.buf, jit_way);
+    
     len=(len<=JIT_MAX_BUF_SIZE)?len:JIT_MAX_BUF_SIZE;
     printk(KERN_DEBUG "len=%d, my_devices.buf=%s\n", len, my_devices.buf);
     ret=copy_to_user(buf, my_devices.buf, len);
@@ -153,6 +253,10 @@ static void jit_setup_cdev(struct jit_dev* dev)
 
 static int __init jit_init(void)
 {
+    printk(KERN_ALERT "Hello, world\n");
+    printk(KERN_DEBUG "delay=%d\n",delay);
+    printk(KERN_DEBUG "jit_way=%d\n",jit_way);
+    
     register_mydev();
     
     if (!reg_ok)
