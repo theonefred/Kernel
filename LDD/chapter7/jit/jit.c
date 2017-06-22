@@ -19,6 +19,7 @@
 //#include <asm/processor.h> //cpu_relax(), included by <linux/sched.h>
 //#include <linux/wait.h> //schedule(), included by <linux/sched.h>
 #include <linux/delay.h> //#include <asm/delay.h>
+#include <linux/interrupt.h> //tasklet_struct
 
 enum jit_ways {
     JIT_CURTIME=0,
@@ -29,22 +30,25 @@ enum jit_ways {
     JIT_LATENCY_NS=5,
     JIT_LATENCY_US,
     JIT_LATENCY_MS,
-    JIT_LATENCY_SLEEP
+    JIT_LATENCY_SLEEP,
+    JIT_TIMER
 };
 
 static int delay=HZ;
 //module_param(delay, int, S_IRUGO);
 //MODULE_PARM_DESC(delay, "delay in second(s)");
+static int tdelay = 10;
+//module_param(tdelay, int, 0);
 static int jit_way=JIT_CURTIME;
 module_param(jit_way, int, S_IRUGO);
-MODULE_PARM_DESC(jit_way, "JIT_CURTIME=0, JIT_BUSY=1, JIT_SCHED=2, JIT_QUEUE=3, JIT_SCHEDTO=4");
+MODULE_PARM_DESC(jit_way, "JIT_CURTIME=0, JIT_BUSY=1, JIT_SCHED=2, JIT_QUEUE=3, JIT_SCHEDTO=4, ...");
 
 dev_t mydev;
 int jit_major=0;
 int count=1;
 int reg_ok=1;
 
-#define JIT_MAX_BUF_SIZE 128
+#define JIT_MAX_BUF_SIZE 1000
 
 struct jit_dev {
     int num;
@@ -186,11 +190,76 @@ int jit_fn(char *buf, int way)
     return len;
 }
 
+struct jit_data {
+    struct timer_list timer;
+    struct tasklet_struct tlet;
+    int hi; /* tasklet or tasklet_hi */
+    wait_queue_head_t wait;
+    unsigned long prevjiffies;
+    char *buf;
+    int loops;
+    int len;
+};
+#define JIT_ASYNC_LOOPS 5
+
+void jit_timer_fn(unsigned long arg)
+{
+    struct jit_data *data = (struct jit_data *)arg;
+    unsigned long j = jiffies;
+    data->len += sprintf(data->buf+data->len, "%9lu  %3lu     %u    %6u   %u   %s\n",
+        j, j - data->prevjiffies, in_interrupt() ? 1 : 0,
+        current->pid, smp_processor_id(), current->comm);
+
+    if ((--data->loops) && (data->len < JIT_MAX_BUF_SIZE-200)) {
+        data->timer.expires += tdelay;
+        data->prevjiffies = j;
+        add_timer(&data->timer);
+    } else {
+        wake_up_interruptible(&data->wait);
+    }
+}
+
+int jit_timer(char *buf)
+{
+    struct jit_data jitdata;
+    struct jit_data *data=&jitdata;
+    char *buf2 = buf;
+    unsigned long j = jiffies;
+
+    //data = kmalloc(sizeof(*data), GFP_KERNEL);
+    //if (!data)
+    //    return -ENOMEM;
+
+    init_timer(&data->timer);
+    init_waitqueue_head (&data->wait);
+
+    data->len = sprintf(buf2, "   time   delta  inirq    pid   cpu command\n"
+        "%9lu  %3lu     %u    %6u   %u   %s\n",
+        j, 0L, in_interrupt() ? 1 : 0,
+        current->pid, smp_processor_id(), current->comm);
+
+    data->prevjiffies = j;
+    data->buf = buf2;
+    data->loops = JIT_ASYNC_LOOPS;
+
+    data->timer.data = (unsigned long)data;
+    data->timer.function = jit_timer_fn;
+    data->timer.expires = j + tdelay;
+    add_timer(&data->timer);
+
+    wait_event_interruptible(data->wait, !data->loops);
+    if (signal_pending(current))
+        return -ERESTARTSYS;
+    //buf2 = data->buf;
+    //kfree(data);
+    //return buf2 - buf;
+    return data->len;
+}
+
 ssize_t my_read(struct file *filp, char __user *buf, size_t count, loff_t *f_pos)
 {
     ssize_t retval = -ENOMEM;
     int ret=0;
-    //int i=0;
     int len=0;
     printk(KERN_DEBUG "into my_read()\n");
     
@@ -199,9 +268,11 @@ ssize_t my_read(struct file *filp, char __user *buf, size_t count, loff_t *f_pos
 
     if (jit_way==JIT_CURTIME)
         len=jit_currentime(my_devices.buf);
-    else
+    else if (jit_way<JIT_LATENCY_SLEEP)
         len=jit_fn(my_devices.buf, jit_way);
-    
+    else if (jit_way==JIT_TIMER)
+        len=jit_timer(my_devices.buf);
+
     len=(len<=JIT_MAX_BUF_SIZE)?len:JIT_MAX_BUF_SIZE;
     printk(KERN_DEBUG "len=%d, my_devices.buf=%s\n", len, my_devices.buf);
     ret=copy_to_user(buf, my_devices.buf, len);
