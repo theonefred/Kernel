@@ -19,7 +19,9 @@
 //#include <asm/processor.h> //cpu_relax(), included by <linux/sched.h>
 //#include <linux/wait.h> //schedule(), included by <linux/sched.h>
 #include <linux/delay.h> //#include <asm/delay.h>
+//#include <linux/timer.h> //timer_list, init_timer(), ..., included by <linux/sched.h>
 #include <linux/interrupt.h> //tasklet_struct
+
 
 enum jit_ways {
     JIT_CURTIME=0,
