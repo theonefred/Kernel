@@ -33,7 +33,9 @@ enum jit_ways {
     JIT_LATENCY_US,
     JIT_LATENCY_MS,
     JIT_LATENCY_SLEEP,
-    JIT_TIMER
+    JIT_TIMER,
+    JIT_TASKLET=10,
+    JIT_TASKLET_HIGH
 };
 
 static int delay=HZ;
@@ -258,6 +260,63 @@ int jit_timer(char *buf)
     return data->len;
 }
 
+void jit_tasklet_fn(unsigned long arg)
+{
+    struct jit_data *data = (struct jit_data *)arg;
+    unsigned long j = jiffies;
+    data->len += sprintf(data->buf+data->len, "%9lu  %3lu     %u    %6u   %u   %s\n",
+        j, j - data->prevjiffies, in_interrupt() ? 1 : 0,
+        current->pid, smp_processor_id(), current->comm);
+
+    if ((--data->loops) && (data->len < JIT_MAX_BUF_SIZE-200)) {
+        data->prevjiffies = j;
+        if (data->hi)
+            tasklet_hi_schedule(&data->tlet);
+        else
+            tasklet_schedule(&data->tlet);
+    } else {
+        wake_up_interruptible(&data->wait);
+    }
+}
+
+int jit_tasklet(char *buf, long hi)
+{
+    struct jit_data jitdata;
+    struct jit_data *data=&jitdata;
+    char *buf2 = buf;
+    unsigned long j = jiffies;
+
+    //data = kmalloc(sizeof(*data), GFP_KERNEL);
+    //if (!data)
+    //    return -ENOMEM;
+
+    init_waitqueue_head (&data->wait);
+
+    data->len = sprintf(buf2, "   time   delta  inirq    pid   cpu command\n"
+        "%9lu  %3lu     %u    %6u   %u   %s\n",
+        j, 0L, in_interrupt() ? 1 : 0,
+        current->pid, smp_processor_id(), current->comm);
+
+    data->prevjiffies = j;
+    data->buf = buf2;
+    data->loops = JIT_ASYNC_LOOPS;
+
+    tasklet_init(&data->tlet, jit_tasklet_fn, (unsigned long)data);
+    data->hi = hi;
+    if (hi)
+        tasklet_hi_schedule(&data->tlet);
+    else
+        tasklet_schedule(&data->tlet);
+
+    wait_event_interruptible(data->wait, !data->loops);
+    if (signal_pending(current))
+        return -ERESTARTSYS;
+    //buf2 = data->buf;
+    //kfree(data);
+    //return buf2 - buf;
+    return data->len;
+}
+
 ssize_t my_read(struct file *filp, char __user *buf, size_t count, loff_t *f_pos)
 {
     ssize_t retval = -ENOMEM;
@@ -274,6 +333,10 @@ ssize_t my_read(struct file *filp, char __user *buf, size_t count, loff_t *f_pos
         len=jit_fn(my_devices.buf, jit_way);
     else if (jit_way==JIT_TIMER)
         len=jit_timer(my_devices.buf);
+    else if (jit_way==JIT_TASKLET)
+        len=jit_tasklet(my_devices.buf,0);
+    else if (jit_way==JIT_TASKLET_HIGH)
+        len=jit_tasklet(my_devices.buf,1);
 
     len=(len<=JIT_MAX_BUF_SIZE)?len:JIT_MAX_BUF_SIZE;
     printk(KERN_DEBUG "len=%d, my_devices.buf=%s\n", len, my_devices.buf);
