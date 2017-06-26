@@ -35,7 +35,9 @@ enum jit_ways {
     JIT_LATENCY_SLEEP,
     JIT_TIMER,
     JIT_TASKLET=10,
-    JIT_TASKLET_HIGH
+    JIT_TASKLET_HIGH,
+    JIT_WAITQUEUE,
+    JIT_WAITQUEUE_DELAY
 };
 
 static int delay=HZ;
@@ -203,7 +205,10 @@ struct jit_data {
     char *buf;
     int loops;
     int len;
-};
+    //for work queue
+    unsigned long jiffies;
+    long delay;
+}jitdata;
 #define JIT_ASYNC_LOOPS 5
 
 void jit_timer_fn(unsigned long arg)
@@ -317,6 +322,71 @@ int jit_tasklet(char *buf, long hi)
     return data->len;
 }
 
+#define LIMIT   (JIT_MAX_BUF_SIZE-128) /* don't print any more after this size */
+static DECLARE_WAIT_QUEUE_HEAD (jiq_wait);
+static struct work_struct jiq_work;
+
+static int jiq_print(void *ptr)
+{
+    struct jit_data *data = ptr;
+    int len = data->len;
+    char *buf = data->buf;
+    unsigned long j = jiffies;
+
+    if (len > LIMIT) { 
+        wake_up_interruptible(&jiq_wait);
+        return 0;
+    }
+
+    if (len == 0)
+        len = sprintf(buf,"    time  delta preempt   pid cpu command\n");
+    else
+        len =0;
+
+    len += sprintf(buf+len, "%9lu  %4lu     %3u %5u %3u %s\n",
+        j, j - data->jiffies,
+        preempt_count(), current->pid, smp_processor_id(),
+        current->comm);
+
+    data->len += len;
+    data->buf += len;
+    data->jiffies = j;
+    return 1;
+}
+
+static void jiq_print_wq(void *ptr)
+{
+    struct jit_data *data = (struct jit_data *) ptr;
+
+    if (! jiq_print (ptr))
+        return;
+
+    if (data->delay)
+        schedule_delayed_work(&jiq_work, data->delay);
+    else
+        schedule_work(&jiq_work);
+}
+
+static int jiq_read_wq(char *buf, long delay)
+{
+    DEFINE_WAIT(wait);
+
+    jitdata.len = 0;                /* nothing printed, yet */
+    jitdata.buf = buf;              /* print in this place */
+    jitdata.jiffies = jiffies;      /* initial time */
+    jitdata.delay = delay;
+
+    prepare_to_wait(&jiq_wait, &wait, TASK_INTERRUPTIBLE);
+    if (delay==0)
+        schedule_work(&jiq_work);
+    else
+        schedule_delayed_work(&jiq_work, delay);
+    schedule();
+    finish_wait(&jiq_wait, &wait);
+
+    return jitdata.len;
+}
+
 ssize_t my_read(struct file *filp, char __user *buf, size_t count, loff_t *f_pos)
 {
     ssize_t retval = -ENOMEM;
@@ -337,6 +407,10 @@ ssize_t my_read(struct file *filp, char __user *buf, size_t count, loff_t *f_pos
         len=jit_tasklet(my_devices.buf,0);
     else if (jit_way==JIT_TASKLET_HIGH)
         len=jit_tasklet(my_devices.buf,1);
+    else if (jit_way==JIT_WAITQUEUE)
+        len=jiq_read_wq(my_devices.buf, 0);
+    else if (jit_way==JIT_WAITQUEUE_DELAY)
+        len=jiq_read_wq(my_devices.buf, 1);
 
     len=(len<=JIT_MAX_BUF_SIZE)?len:JIT_MAX_BUF_SIZE;
     printk(KERN_DEBUG "len=%d, my_devices.buf=%s\n", len, my_devices.buf);
@@ -392,6 +466,8 @@ static int __init jit_init(void)
     printk(KERN_ALERT "Hello, world\n");
     printk(KERN_DEBUG "delay=%d\n",delay);
     printk(KERN_DEBUG "jit_way=%d\n",jit_way);
+    
+    INIT_WORK(&jiq_work, jiq_print_wq, &jitdata);
     
     register_mydev();
     
