@@ -11,7 +11,8 @@
 //#include <linux/kdev_t.h> //for MAJOR,MINOR, included by <linux/fs.h>
 //#include <asm/semaphore.h>    //struct semaphore, included by <linux/fs.h>
 #include <linux/slab.h> //kmalloc / kfree,...
-
+#include <linux/completion.h> //complete(), wait_for_completion(),...
+#include <linux/rwsem.h> //rw_semaphore,...
 
 static int number=10;
 module_param(number, int, S_IRUGO);
@@ -34,7 +35,7 @@ int reg_ok=1;
 struct hello_dev {
     int num;
     char* buf;
-    struct semaphore sem;
+    struct rw_semaphore rwsem;
     struct cdev cdev;
 };
 
@@ -69,24 +70,17 @@ int my_release(struct inode *inode, struct file *filp)
     return 0;
 }
 
+DECLARE_COMPLETION(comp);
+
 ssize_t my_read(struct file *filp, char __user *buf, size_t count, loff_t *f_pos)
 {
     ssize_t retval = -ENOMEM;
     int ret=0;
     int i=0;
-    printk(KERN_DEBUG "into my_read()\n");
-    
-    if (down_interruptible(&my_devices.sem))
-        return -ERESTARTSYS;
+    printk(KERN_DEBUG "into my_read(), go to sleep for writing\n");
+    wait_for_completion(&comp);
 
-    //ok for copying an int
-    //ret=copy_to_user(buf, &my_devices.num, sizeof(my_devices.num));
-    //if (ret)
-    //    printk(KERN_ERR "copy_to_user failed\n");
-    //else
-    //    retval=0;
-    
-    //copy buffer
+    down_read(&my_devices.rwsem);
     for (i=32;i<127;++i) //printable ASCII chars
         my_devices.buf[i-32]=i;
     ret=copy_to_user(buf, my_devices.buf, HELLO_MAX_BUF_SIZE);
@@ -94,8 +88,8 @@ ssize_t my_read(struct file *filp, char __user *buf, size_t count, loff_t *f_pos
         printk(KERN_ERR "copy_to_user failed\n");
     else
         retval=127-32;
+    up_read(&my_devices.rwsem);
     
-    up(&my_devices.sem);
     return retval;
 }
 
@@ -103,13 +97,17 @@ ssize_t my_write(struct file *filp, const char __user *buf, size_t count, loff_t
 {
     ssize_t retval = -ENOMEM;
     int ret=0;
-    printk(KERN_DEBUG "into my_write()\n");
+    printk(KERN_DEBUG "into my_write(), wake the reader \n");
+    complete(&comp);
+    
+    down_write(&my_devices.rwsem);
     ret=copy_from_user(&my_devices.num, buf, sizeof(my_devices.num));
     printk(KERN_DEBUG "my_devices.num=0x%x after the writing\n", my_devices.num);
     if (ret)
         printk(KERN_ERR "copy_from_user failed\n");
     else
         retval=0;
+    up_write(&my_devices.rwsem);
 
     return retval;
 }
@@ -168,7 +166,7 @@ static void hello_setup_cdev(struct hello_dev* dev)
     else
         printk(KERN_DEBUG "%d adding hello cdev OK\n", err);
 
-    sema_init(&my_devices.sem, 1);
+    init_rwsem(&my_devices.rwsem);
 }
 
 static int __init hello_init(void)
