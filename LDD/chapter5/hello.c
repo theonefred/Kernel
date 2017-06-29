@@ -13,6 +13,7 @@
 #include <linux/slab.h> //kmalloc / kfree,...
 #include <linux/completion.h> //complete(), wait_for_completion(),...
 #include <linux/rwsem.h> //rw_semaphore,...
+#include <asm/atomic.h>
 
 static int number=10;
 module_param(number, int, S_IRUGO);
@@ -37,6 +38,7 @@ struct hello_dev {
     char* buf;
     struct rw_semaphore rwsem;
     struct cdev cdev;
+    atomic_t v;
 };
 
 struct hello_dev my_devices;
@@ -72,13 +74,36 @@ int my_release(struct inode *inode, struct file *filp)
 
 DECLARE_COMPLETION(comp);
 
+void use_atomic()
+{
+    int i=5, j=3, k=0;
+    printk(KERN_DEBUG "atomic var v=%d\n", atomic_read(&my_devices.v));
+    atomic_add(i, &my_devices.v);
+    printk(KERN_DEBUG "after atomic_add %d, v=%d\n", i, atomic_read(&my_devices.v));
+    atomic_sub(j, &my_devices.v);
+    printk(KERN_DEBUG "after atomic_sub %d, v=%d\n", j, atomic_read(&my_devices.v));
+    atomic_inc(&my_devices.v);
+    printk(KERN_DEBUG "after atomic_inc, v=%d\n", atomic_read(&my_devices.v));
+    atomic_dec(&my_devices.v);
+    printk(KERN_DEBUG "after atomic_dec, v=%d\n", atomic_read(&my_devices.v));
+    
+    printk(KERN_DEBUG "after atomic_add_return %d, v=%d\n", i, atomic_add_return(i, &my_devices.v));
+    printk(KERN_DEBUG "after atomic_sub_return %d, v=%d\n", j, atomic_sub_return(j, &my_devices.v));
+    printk(KERN_DEBUG "after atomic_inc_return, v=%d\n", atomic_inc_return(&my_devices.v));
+    printk(KERN_DEBUG "after atomic_dec_return, v=%d\n", atomic_dec_return(&my_devices.v));
+    
+    k=atomic_sub_and_test(1, &my_devices.v);
+    if (!k)
+        printk(KERN_DEBUG "atomic_sub_and_test()=%d\n", k);
+}
+
 ssize_t my_read(struct file *filp, char __user *buf, size_t count, loff_t *f_pos)
 {
     ssize_t retval = -ENOMEM;
     int ret=0;
     int i=0;
     printk(KERN_DEBUG "into my_read(), go to sleep for writing\n");
-    wait_for_completion(&comp);
+    //wait_for_completion(&comp);
 
     down_read(&my_devices.rwsem);
     for (i=32;i<127;++i) //printable ASCII chars
@@ -90,6 +115,7 @@ ssize_t my_read(struct file *filp, char __user *buf, size_t count, loff_t *f_pos
         retval=127-32;
     up_read(&my_devices.rwsem);
     
+    use_atomic();
     return retval;
 }
 
@@ -98,7 +124,7 @@ ssize_t my_write(struct file *filp, const char __user *buf, size_t count, loff_t
     ssize_t retval = -ENOMEM;
     int ret=0;
     printk(KERN_DEBUG "into my_write(), wake the reader \n");
-    complete(&comp);
+    //complete(&comp);
     
     down_write(&my_devices.rwsem);
     ret=copy_from_user(&my_devices.num, buf, sizeof(my_devices.num));
@@ -167,6 +193,7 @@ static void hello_setup_cdev(struct hello_dev* dev)
         printk(KERN_DEBUG "%d adding hello cdev OK\n", err);
 
     init_rwsem(&my_devices.rwsem);
+    atomic_set(&my_devices.v, 0);
 }
 
 static int __init hello_init(void)
