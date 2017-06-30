@@ -9,6 +9,7 @@ else
 endif
 
 CFLAGS += $(DEBFLAGS) -I$(LDDINCDIR)
+#use EXTRA_CFLAGS += $(DEBFLAGS) -I$(LDDINCDIR) on 2.6.32
 
 ifneq ($(KERNELRELEASE),)
 # call from kernel build system

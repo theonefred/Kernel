@@ -24,7 +24,7 @@ MODULE_PARM_DESC(name, "an charp parameter example");
 
 static int num=0;
 static int arr[]={0,1,2,3,4,5};
-module_param_array(arr, int, num, S_IRUGO);
+module_param_array(arr, int, num, S_IRUGO); //not work on 2.6.32
 
 dev_t mydev;
 int hello_major=0;
@@ -166,7 +166,7 @@ static void hello(void)
     printk(KERN_DEBUG "into hello()\n");
 
     printk(KERN_ALERT "Hello, world\n");
-    printk(KERN_DEBUG "UTS_RELEASE=%s\n",UTS_RELEASE);
+    printk(KERN_DEBUG "UTS_RELEASE=%s\n",UTS_RELEASE); //works on 2.6.10, no definition in 2.6.32
     printk(KERN_DEBUG "LINUX_VERSION_CODE=%u\n",LINUX_VERSION_CODE);
     printk(KERN_DEBUG "number=%d\n",number);
     printk(KERN_DEBUG "name=%s\n",name);
