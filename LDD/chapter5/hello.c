@@ -35,7 +35,8 @@ int reg_ok=1;
 
 struct hello_dev {
     int num;
-    char* buf;
+    //char* buf;
+    char buf[HELLO_MAX_BUF_SIZE];
     struct rw_semaphore rwsem;
     struct cdev cdev;
     atomic_t v;
@@ -54,13 +55,25 @@ int my_open(struct inode *inode, struct file *filp)
     dev->num=0x12345678;
     printk(KERN_DEBUG "&(*dev)=0x%p, &my_devices=0x%p\n, my_devices.num=0x%x\n", &(*dev), &my_devices, my_devices.num);
     
-    dev->buf=(char*)kmalloc(HELLO_MAX_BUF_SIZE, GFP_KERNEL);
-    if (dev->buf) {
-        memset(dev->buf, 0, HELLO_MAX_BUF_SIZE);
-        printk(KERN_DEBUG "buf is memset to 0\n");
-    }
-    else
-        printk(KERN_ERR "kmalloc failed\n");
+    //the root cause of the crash of using completion for two user space processes with their own open
+    //if process A reads and is suspended due to some mutex, so buf is allocated
+    //when B writes, buf is allocated again, the previous buf alllocated by A is lost
+    //then when A is resumed, it has its reading done, and releases the buf
+    //while when B is finished, it also releases the buf
+    //it is not caused by completion at all
+    //solution:
+    //1. not allocate buf dynamically
+    //2. add reference counter for dynamically allocated buf
+    //once it is >0, no more malloc; not free it until no user (ref num==0) in my_release()
+    //or 3. use one user space exe file, which opens the device once, and then fork anther process to write
+    
+    //dev->buf=(char*)kmalloc(HELLO_MAX_BUF_SIZE, GFP_KERNEL);
+    //if (dev->buf) {
+    //    memset(dev->buf, 0, HELLO_MAX_BUF_SIZE);
+    //    printk(KERN_DEBUG "buf is memset to 0\n");
+    //}
+    //else
+    //    printk(KERN_ERR "kmalloc failed\n");
 
     return 0;          /* success */
 }
@@ -68,13 +81,13 @@ int my_open(struct inode *inode, struct file *filp)
 int my_release(struct inode *inode, struct file *filp)
 {
     printk(KERN_DEBUG "into my_release()\n");
-    kfree(my_devices.buf);
+    //kfree(my_devices.buf);
     return 0;
 }
 
 DECLARE_COMPLETION(comp);
 
-void use_atomic()
+void use_atomic(void)
 {
     int i=5, j=3, k=0;
     printk(KERN_DEBUG "atomic var v=%d\n", atomic_read(&my_devices.v));
@@ -103,7 +116,7 @@ ssize_t my_read(struct file *filp, char __user *buf, size_t count, loff_t *f_pos
     int ret=0;
     int i=0;
     printk(KERN_DEBUG "into my_read(), go to sleep for writing\n");
-    //wait_for_completion(&comp);
+    wait_for_completion(&comp);
 
     down_read(&my_devices.rwsem);
     for (i=32;i<127;++i) //printable ASCII chars
@@ -124,7 +137,7 @@ ssize_t my_write(struct file *filp, const char __user *buf, size_t count, loff_t
     ssize_t retval = -ENOMEM;
     int ret=0;
     printk(KERN_DEBUG "into my_write(), wake the reader \n");
-    //complete(&comp);
+    complete(&comp);
     
     down_write(&my_devices.rwsem);
     ret=copy_from_user(&my_devices.num, buf, sizeof(my_devices.num));
