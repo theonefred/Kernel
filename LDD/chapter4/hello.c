@@ -38,10 +38,10 @@ static int hello_read_proc(char *buf, char **start, off_t offset, int len, int *
         number, name, num,
         current->comm, current->pid);
     //*start = buf; //with this line, it will print the above lines again and again
+    //*start =(char*)8; //also print the above lines again and again
     //*start = 0; //it equals to do nothing with *start
-    *start =(char*)8;
-    //*eof=1;
-    printk(KERN_ALERT "buf=%p\n",buf);
+    //*eof=0;
+    printk(KERN_ALERT "*start=%p, *eof=%d, buf=%p\n",*start, *eof, buf); //something like: *start=00000000, *eof=0, buf=d9f53000
     return len;
 }
 
