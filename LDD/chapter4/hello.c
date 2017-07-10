@@ -49,7 +49,7 @@ static int hello_read_proc(char *buf, char **start, off_t offset, int len, int *
 static int __init hello_init(void)
 {
     printk(KERN_ALERT "Hello, world\n");
-    create_proc_read_entry("hello", 0, NULL, hello_read_proc, NULL);
+    create_proc_read_entry("driver/hello", 0, NULL, hello_read_proc, NULL);
     return 0;
 }
 
